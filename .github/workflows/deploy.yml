@@ -1,0 +1,91 @@
+name: Deploy lighter-server
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+            
+            # Function to check if process exists
+            process_exists() {
+              pm2 list | grep -q "lighter-server" && return 0 || return 1
+            }
+            
+            echo "🚀 Switching to project directory"
+            cd /home/ubuntu/lighter-server
+            
+            echo "🧹 Resetting local changes"
+            git reset --hard
+            
+            echo "⬇️ Pulling latest code"
+            git pull origin main
+            
+            echo "📦 Installing dependencies"
+            npm install
+            
+            echo "🔄 Managing PM2 process"
+            
+            # Kill existing process if it's in error state
+            if process_exists; then
+              STATUS=$(pm2 show lighter-server | grep "status" | awk '{print $4}')
+              if [ "$STATUS" == "errored" ] || [ "$STATUS" == "stopped" ]; then
+                echo "⚠️ Process exists but is in $STATUS state. Removing and restarting..."
+                pm2 delete lighter-server
+                process_exists=false
+              else
+                echo "🔄 PM2 process found - Reloading..."
+                pm2 reload lighter-server
+                echo "✅ Process reloaded successfully"
+                process_exists=true
+              fi
+            fi
+            
+            # Start new process if not exists
+            if ! process_exists; then
+              echo "🆕 Starting new PM2 process..."
+              
+              # Try different entry points
+              if [ -f "src/index.js" ]; then
+                echo "📄 Found src/index.js"
+                pm2 start src/index.js --name lighter-server
+              elif [ -f "src/server.js" ]; then
+                echo "📄 Found src/server.js"
+                pm2 start src/server.js --name lighter-server
+              elif [ -f "app.js" ]; then
+                echo "📄 Found app.js"
+                pm2 start app.js --name lighter-server
+              elif [ -f "server.js" ]; then
+                echo "📄 Found server.js"
+                pm2 start server.js --name lighter-server
+              elif [ -f "index.js" ]; then
+                echo "📄 Found index.js"
+                pm2 start index.js --name lighter-server
+              else
+                echo "📄 No entry file found! Using npm start..."
+                pm2 start npm --name lighter-server -- start
+              fi
+              
+              pm2 save
+              echo "✅ New process started and saved"
+            fi
+            
+            echo "📊 PM2 Status:"
+            pm2 status
+            
+            echo "📋 Recent logs:"
+            pm2 logs lighter-server --lines 5 --nostream
+            
+            echo "✅ Deployment finished"
